@@ -50,3 +50,7 @@ npm install pdf-parse-fork
 //read message format
 
 npm install react-markdown
+
+npm install @supabase/supabase-js
+
+npm install sonner

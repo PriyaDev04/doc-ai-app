@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
             return NextResponse.json(
-                { error: "API Key missing in .env.local" },
+                { error: "API Key missing in environment variable." },
                 { status: 500 }
             );
         }
@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
 
         let extractedText = "";
 
+        // Parse document if attached
         if (file) {
             const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -41,14 +42,37 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        const systemPrompt = extractedText
-            ? `You are an assistant answering questions based on the following document context:
----
-${extractedText.slice(0, 15000)}
----
-Question: ${question}`
-            : question;
+        // Strict System Instructions Guardrail
+        let systemPrompt = "";
 
+        if (extractedText.trim()) {
+            systemPrompt = `You are a strict, dedicated Document AI assistant.
+Your ONLY task is to answer user questions using information strictly found within the provided document context below.
+
+DOCUMENT CONTEXT:
+---
+${extractedText.slice(0, 30000)}
+---
+
+STRICT RULES & GUARDRAILS:
+1. Answer the user's question ONLY if the answer can be directly derived from the document context provided above.
+2. If the user asks a question that is NOT related to or answered by the uploaded document context, respond with exact text:
+   "I can only answer questions related to your uploaded document. The provided document does not contain information to answer this question."
+3. Do NOT use outside general knowledge, web facts, or answer general trivia.
+4. Keep answers factual, concise, and grounded strictly in the context.
+
+User Question: ${question}`;
+        } else {
+            // Case when user submits without uploading a file
+            systemPrompt = `You are a Document AI assistant.
+The user has not uploaded any document yet.
+If the user asks any factual question or general knowledge question, respond with:
+"Please upload a document first so I can answer questions about it!"
+
+User Question: ${question}`;
+        }
+
+        // Request payload to Gemini API
         const res = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
             {
@@ -63,7 +87,7 @@ Question: ${question}`
         const data = await res.json();
 
         if (!res.ok) {
-            console.error("Gemini REST API Error:", data);
+            console.error("Gemini API Error:", data);
             return NextResponse.json(
                 { error: data.error?.message || "Gemini API request failed." },
                 { status: res.status }
