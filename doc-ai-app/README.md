@@ -46,3 +46,7 @@ npm install officeparser
 
 npm uninstall pdf-parse @types/pdf-parse
 npm install pdf-parse-fork
+
+//read message format
+
+npm install react-markdown

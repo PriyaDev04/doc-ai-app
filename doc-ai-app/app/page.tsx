@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Upload, Send, FileText, Bot, User } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 interface Message {
   role: "user" | "assistant";
@@ -76,7 +77,7 @@ export default function Home() {
           <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-500 transition-colors">
             <input
               type="file"
-              accept=".pdf,.txt"
+              accept=".pdf,.txt,.doc,.docx"
               onChange={handleFileChange}
               className="hidden"
               id="file-upload"
@@ -84,7 +85,7 @@ export default function Home() {
             <label htmlFor="file-upload" className="cursor-pointer block">
               <Upload className="mx-auto h-10 w-10 text-gray-400 mb-2" />
               <span className="text-sm font-medium text-gray-600 block">
-                {file ? file.name : "Click to upload PDF or TXT"}
+                {file ? file.name : "Click to upload file"}
               </span>
               <span className="text-xs text-gray-400 mt-1 block">Up to 10MB</span>
             </label>
@@ -117,21 +118,39 @@ export default function Home() {
                 }`}
               >
                 {msg.role === "assistant" && (
-                  <div className="p-2 bg-blue-600 text-white rounded-full">
+                  <div className="p-2 bg-blue-600 text-white rounded-full shrink-0">
                     <Bot size={18} />
                   </div>
                 )}
+                
                 <div
-                  className={`max-w-md p-4 rounded-xl text-sm ${
+                  className={`max-w-2xl p-4 rounded-xl text-sm ${
                     msg.role === "user"
                       ? "bg-blue-600 text-white rounded-br-none"
                       : "bg-white text-gray-800 border border-gray-200 rounded-bl-none shadow-sm"
                   }`}
                 >
-                  {msg.content}
+                  {/* --- MARKDOWN RENDERER --- */}
+                  {/* {msg.role === "assistant" ? (
+                    <ReactMarkdown className="prose max-w-none text-gray-800 space-y-2">
+                      {msg.content}
+                    </ReactMarkdown>
+                  ) : (
+                    <p>{msg.content}</p>
+                  )} */}
+
+                  {/* --- MARKDOWN RENDERER --- */}
+{msg.role === "assistant" ? (
+  <div className="prose max-w-none text-gray-800 space-y-2">
+    <ReactMarkdown>{msg.content}</ReactMarkdown>
+  </div>
+) : (
+  <p>{msg.content}</p>
+)}
                 </div>
+
                 {msg.role === "user" && (
-                  <div className="p-2 bg-gray-700 text-white rounded-full">
+                  <div className="p-2 bg-gray-700 text-white rounded-full shrink-0">
                     <User size={18} />
                   </div>
                 )}
