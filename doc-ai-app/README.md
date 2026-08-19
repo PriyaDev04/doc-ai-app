@@ -54,3 +54,7 @@ npm install react-markdown
 npm install @supabase/supabase-js
 
 npm install sonner
+
+npm install @supabase/ssr @supabase/supabase-js
+
+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

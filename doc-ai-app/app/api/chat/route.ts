@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import pdfParse from "pdf-parse-fork";
 import { parseOffice } from "officeparser";
 
+// Initialize Gemini SDK with your API Key
+const apiKey = process.env.GEMINI_API_KEY || "";
+const genAI = new GoogleGenerativeAI(apiKey);
+
 export async function POST(req: NextRequest) {
     try {
-        const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
             return NextResponse.json(
                 { error: "API Key missing in environment variable." },
@@ -15,6 +19,8 @@ export async function POST(req: NextRequest) {
         const formData = await req.formData();
         const file = formData.get("file") as File | null;
         const question = formData.get("question") as string;
+        const driveFileUrl = formData.get("driveFileUrl") as string | null;
+        const providerToken = formData.get("providerToken") as string | null;
 
         if (!question) {
             return NextResponse.json({ error: "Question is required." }, { status: 400 });
@@ -22,7 +28,7 @@ export async function POST(req: NextRequest) {
 
         let extractedText = "";
 
-        // Parse document if attached
+        // 1. Extract text from uploaded local file
         if (file) {
             const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -41,8 +47,44 @@ export async function POST(req: NextRequest) {
                 extractedText = buffer.toString("utf-8");
             }
         }
+        // 2. Fetch and extract text from Google Drive API file
+        else if (driveFileUrl && providerToken) {
+            const driveRes = await fetch(driveFileUrl, {
+                headers: { Authorization: `Bearer ${providerToken}` },
+            });
 
-        // Strict System Instructions Guardrail
+            if (driveRes.ok) {
+                const contentType = driveRes.headers.get("content-type") || "";
+                const arrayBuf = await driveRes.arrayBuffer();
+                const buffer = Buffer.from(arrayBuf);
+
+                if (contentType.includes("application/pdf") || driveFileUrl.includes("alt=media")) {
+                    try {
+                        const pdfData = await pdfParse(buffer);
+                        extractedText = pdfData.text;
+                    } catch {
+                        extractedText = buffer.toString("utf-8");
+                    }
+                } else if (
+                    contentType.includes("word") ||
+                    contentType.includes("officedocument") ||
+                    contentType.includes("presentation") ||
+                    contentType.includes("spreadsheet")
+                ) {
+                    const ast = await parseOffice(buffer);
+                    extractedText = typeof ast === "string" ? ast : ast.toText();
+                } else {
+                    extractedText = buffer.toString("utf-8");
+                }
+            } else {
+                return NextResponse.json(
+                    { error: "Failed to download document from Google Drive. Check permissions." },
+                    { status: 400 }
+                );
+            }
+        }
+
+        // 3. Build Strict System Guardrail Prompt
         let systemPrompt = "";
 
         if (extractedText.trim()) {
@@ -63,39 +105,20 @@ STRICT RULES & GUARDRAILS:
 
 User Question: ${question}`;
         } else {
-            // Case when user submits without uploading a file
             systemPrompt = `You are a Document AI assistant.
-The user has not uploaded any document yet.
+The user has not uploaded any document or selected a Google Drive file yet.
 If the user asks any factual question or general knowledge question, respond with:
-"Please upload a document first so I can answer questions about it!"
+"Please upload or select a document first so I can answer questions about it!"
 
 User Question: ${question}`;
         }
 
-        // Request payload to Gemini API
-        const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: systemPrompt }] }],
-                }),
-            }
-        );
+        // 4. Generate response using updated Gemini 3.6 Flash endpoint
+        const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
+        const result = await model.generateContent(systemPrompt);
+        const responseText = result.response.text();
 
-        const data = await res.json();
-
-        if (!res.ok) {
-            console.error("Gemini API Error:", data);
-            return NextResponse.json(
-                { error: data.error?.message || "Gemini API request failed." },
-                { status: res.status }
-            );
-        }
-
-        const answer = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
-        return NextResponse.json({ answer });
+        return NextResponse.json({ answer: responseText });
     } catch (error: unknown) {
         console.error("Server API Error:", error);
         return NextResponse.json(
