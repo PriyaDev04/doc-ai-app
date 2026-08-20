@@ -1,53 +1,106 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import pdfParse from "pdf-parse-fork";
 import { parseOffice } from "officeparser";
 
-// Initialize Gemini SDK with your API Key
+export const maxDuration = 60; // Prevents timeouts on heavy PDF OCR tasks
+
 const apiKey = process.env.GEMINI_API_KEY || "";
-const genAI = new GoogleGenerativeAI(apiKey);
+
+interface InlineDataPart {
+    inline_data: {
+        mime_type: string;
+        data: string;
+    };
+}
+
+interface TextPart {
+    text: string;
+}
+
+type GeminiPart = InlineDataPart | TextPart;
+
+interface GeminiContent {
+    role: string;
+    parts: GeminiPart[];
+}
+
+interface GeminiApiResponse {
+    candidates?: Array<{
+        content?: {
+            parts?: Array<{
+                text?: string;
+            }>;
+        };
+    }>;
+    error?: {
+        message?: string;
+    };
+}
 
 export async function POST(req: NextRequest) {
     try {
         if (!apiKey) {
             return NextResponse.json(
-                { error: "API Key missing in environment variable." },
+                { error: "API Key missing in environment variables." },
                 { status: 500 }
             );
         }
 
         const formData = await req.formData();
-        const file = formData.get("file") as File | null;
+        const rawFile = formData.get("file");
         const question = formData.get("question") as string;
         const driveFileUrl = formData.get("driveFileUrl") as string | null;
         const providerToken = formData.get("providerToken") as string | null;
+        const historyJson = formData.get("history") as string | null;
 
         if (!question) {
             return NextResponse.json({ error: "Question is required." }, { status: 400 });
         }
 
+        const file = rawFile instanceof File && rawFile.size > 0 ? rawFile : null;
+
         let extractedText = "";
+        let inlinePdfPart: { inlineData: { mimeType: string; data: string } } | null = null;
 
-        // 1. Extract text from uploaded local file
-        if (file) {
-            const buffer = Buffer.from(await file.arrayBuffer());
+        // Helper to process document buffer and extract text or prepare inline vision data
+        async function processDocumentBuffer(buffer: Buffer, isPdf: boolean) {
+            if (isPdf) {
+                try {
+                    const pdfData = await pdfParse(buffer);
+                    extractedText = pdfData?.text || "";
+                } catch {
+                    extractedText = "";
+                }
 
-            if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
-                const pdfData = await pdfParse(buffer);
-                extractedText = pdfData.text;
-            } else if (
-                file.name.endsWith(".docx") ||
-                file.name.endsWith(".doc") ||
-                file.name.endsWith(".pptx") ||
-                file.name.endsWith(".xlsx")
-            ) {
-                const ast = await parseOffice(buffer);
-                extractedText = typeof ast === "string" ? ast : ast.toText();
+                const printableText = extractedText.replace(/\s+/g, "");
+
+                // If no text layer exists (scanned/image PDF), fallback to multimodal OCR
+                if (printableText.length === 0) {
+                    extractedText = "";
+                    inlinePdfPart = {
+                        inlineData: {
+                            mimeType: "application/pdf",
+                            data: buffer.toString("base64"),
+                        },
+                    };
+                }
             } else {
-                extractedText = buffer.toString("utf-8");
+                try {
+                    const ast = await parseOffice(buffer);
+                    extractedText = typeof ast === "string" ? ast : ast.toText();
+                } catch {
+                    extractedText = buffer.toString("utf-8");
+                }
             }
         }
-        // 2. Fetch and extract text from Google Drive API file
+
+        // 1. Process Local File
+        if (file) {
+            const buffer = Buffer.from(await file.arrayBuffer());
+            const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+            await processDocumentBuffer(buffer, isPdf);
+        }
+        // 2. Process Google Drive File
         else if (driveFileUrl && providerToken) {
             const driveRes = await fetch(driveFileUrl, {
                 headers: { Authorization: `Bearer ${providerToken}` },
@@ -57,72 +110,120 @@ export async function POST(req: NextRequest) {
                 const contentType = driveRes.headers.get("content-type") || "";
                 const arrayBuf = await driveRes.arrayBuffer();
                 const buffer = Buffer.from(arrayBuf);
+                const isPdf = contentType.includes("application/pdf") || driveFileUrl.includes("alt=media");
 
-                if (contentType.includes("application/pdf") || driveFileUrl.includes("alt=media")) {
-                    try {
-                        const pdfData = await pdfParse(buffer);
-                        extractedText = pdfData.text;
-                    } catch {
-                        extractedText = buffer.toString("utf-8");
-                    }
-                } else if (
-                    contentType.includes("word") ||
-                    contentType.includes("officedocument") ||
-                    contentType.includes("presentation") ||
-                    contentType.includes("spreadsheet")
-                ) {
-                    const ast = await parseOffice(buffer);
-                    extractedText = typeof ast === "string" ? ast : ast.toText();
-                } else {
-                    extractedText = buffer.toString("utf-8");
-                }
+                await processDocumentBuffer(buffer, isPdf);
             } else {
                 return NextResponse.json(
-                    { error: "Failed to download document from Google Drive. Check permissions." },
+                    { error: "Failed to download document from Google Drive." },
                     { status: 400 }
                 );
             }
         }
 
-        // 3. Build Strict System Guardrail Prompt
-        let systemPrompt = "";
+        // 3. Format History
+        let parsedHistory: Array<{ role: string; content: string }> = [];
+        if (historyJson) {
+            try {
+                parsedHistory = JSON.parse(historyJson);
+            } catch {
+                parsedHistory = [];
+            }
+        }
+
+        const formattedHistory = parsedHistory
+            .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+            .join("\n");
+
+        // 4. Construct Prompt Context
+        let promptText = "";
 
         if (extractedText.trim()) {
-            systemPrompt = `You are a strict, dedicated Document AI assistant.
-Your ONLY task is to answer user questions using information strictly found within the provided document context below.
+            promptText = `You are a dedicated Document AI assistant.
+Answer questions strictly based on the document text provided below.
 
 DOCUMENT CONTEXT:
 ---
 ${extractedText.slice(0, 30000)}
 ---
 
-STRICT RULES & GUARDRAILS:
-1. Answer the user's question ONLY if the answer can be directly derived from the document context provided above.
-2. If the user asks a question that is NOT related to or answered by the uploaded document context, respond with exact text:
-   "I can only answer questions related to your uploaded document. The provided document does not contain information to answer this question."
-3. Do NOT use outside general knowledge, web facts, or answer general trivia.
-4. Keep answers factual, concise, and grounded strictly in the context.
+CONVERSATION HISTORY:
+${formattedHistory || "None"}
 
-User Question: ${question}`;
+Current Question: ${question}`;
+        } else if (inlinePdfPart) {
+            promptText = `You are an expert Document AI and Optical Character Recognition (OCR) engine.
+A scanned/image PDF document is provided directly. Read all visible text, tables, and contents visually and answer the question accurately.
+
+CONVERSATION HISTORY:
+${formattedHistory || "None"}
+
+Current Question: ${question}`;
         } else {
-            systemPrompt = `You are a Document AI assistant.
-The user has not uploaded any document or selected a Google Drive file yet.
-If the user asks any factual question or general knowledge question, respond with:
-"Please upload or select a document first so I can answer questions about it!"
+            promptText = `You are a Document AI assistant.
+CONVERSATION HISTORY:
+${formattedHistory || "None"}
 
-User Question: ${question}`;
+Current Question: ${question}`;
         }
 
-        // 4. Generate response using updated Gemini 3.6 Flash endpoint
-        const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
-        const result = await model.generateContent(systemPrompt);
-        const responseText = result.response.text();
+        // 5. Construct Payload for Direct Gemini REST Call
+        const contentsPayload: GeminiContent[] = [];
 
-        return NextResponse.json({ answer: responseText });
+        if (inlinePdfPart) {
+            const pdfDataPart = inlinePdfPart as { inlineData: { mimeType: string; data: string } };
+            const base64Data = pdfDataPart.inlineData.data;
+
+            contentsPayload.push({
+                role: "user",
+                parts: [
+                    { inline_data: { mime_type: "application/pdf", data: base64Data } },
+                    { text: promptText },
+                ],
+            });
+        } else {
+            contentsPayload.push({
+                role: "user",
+                parts: [{ text: promptText }],
+            });
+        }
+
+        // Direct REST API Call using v1beta URL
+        // Direct REST API Call using gemini-2.0-flash on v1beta
+        // Direct REST API Call using gemini-3.6-flash
+        const googleResponse = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ contents: contentsPayload }),
+            }
+        );
+
+        const data: GeminiApiResponse = await googleResponse.json();
+
+        if (!googleResponse.ok) {
+            console.error("Gemini API Error Payload:", data);
+            return NextResponse.json(
+                { error: data?.error?.message || "Error communicating with Gemini API." },
+                { status: googleResponse.status }
+            );
+        }
+
+        const answer =
+            data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+            "No response generated from model.";
+
+        return NextResponse.json({ answer });
+
+
     } catch (error: unknown) {
         console.error("Server API Error:", error);
+        const errorMessage =
+            error instanceof Error ? error.message : "Failed to process document.";
+
         return NextResponse.json(
-            { error: "Failed to process document." },
+            { error: errorMessage },
             { status: 500 }
         );
     }

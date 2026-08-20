@@ -1,8 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Session } from "@supabase/supabase-js";
-import { Upload, FileText, LogOut, Plus, MessageSquare, Loader2, HardDrive, Bot, User } from "lucide-react";
+import { 
+  Upload, FileText, LogOut, Plus, MessageSquare, Loader2, 
+  HardDrive, Bot, User, Trash2, Edit2, Check, X 
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Toaster, toast } from "sonner";
 import { supabase } from "./lib/supabase";
@@ -37,66 +40,35 @@ export default function Home() {
   const [isSending, setIsSending] = useState(false);
   const [isLoadingDrive, setIsLoadingDrive] = useState(false);
 
-  // 1. Google OAuth Sign In
-  // const handleGoogleSignIn = async () => {
-  //   const { error } = await supabase.auth.signInWithOAuth({
-  //     provider: "google",
-  //     options: {
-  //       scopes: "https://www.googleapis.com/auth/drive.readonly",
-  //       redirectTo: typeof window !== "undefined" ? `${window.location.origin}` : undefined,
-  //       queryParams: {
-  //         access_type: "offline",
-  //         prompt: "consent",
-  //       },
-  //     },
-  //   });
-  //   if (error) toast.error(error.message);
-  // };
+  // Renaming state
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
 
-//   const handleGoogleSignIn = async () => {
-//   const { error } = await supabase.auth.signInWithOAuth({
-//     provider: "google",
-//     options: {
-//       scopes: "https://www.googleapis.com/auth/drive.readonly",
-//       redirectTo: `${window.location.origin}/auth/callback`,
-//       queryParams: {
-//         access_type: "offline",
-//         prompt: "consent",
-//       },
-//     },
-//   });
-//   if (error) toast.error(error.message);
-// };
+  // Ref for auto-scrolling
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-// const handleGoogleSignIn = async () => {
-//   const { error } = await supabase.auth.signInWithOAuth({
-//     provider: "google",
-//     options: {
-//       scopes: "https://www.googleapis.com/auth/drive.readonly",
-//       redirectTo: `${window.location.origin}/auth/callback`,
-//       queryParams: {
-//         access_type: "offline",
-//         prompt: "consent",
-//       },
-//     },
-//   });
-//   if (error) toast.error(error.message);
-// };
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
 
-const handleGoogleSignIn = async () => {
-  const { error } = await supabase.auth.signInWithOAuth({
-    provider: "google",
-    options: {
-      scopes: "https://www.googleapis.com/auth/drive.readonly",
-      redirectTo: `${window.location.origin}/auth/callback`,
-      queryParams: {
-        access_type: "offline",
-        prompt: "consent",
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isSending]);
+
+  const handleGoogleSignIn = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        scopes: "https://www.googleapis.com/auth/drive.readonly",
+        redirectTo: `${window.location.origin}/auth/callback`,
+        queryParams: {
+          access_type: "offline",
+          prompt: "consent",
+        },
       },
-    },
-  });
-  if (error) toast.error(error.message);
-};
+    });
+    if (error) toast.error(error.message);
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -104,28 +76,45 @@ const handleGoogleSignIn = async () => {
     setChats([]);
     setMessages([]);
     setActiveChatId(null);
+    setFile(null);
+    setSelectedDriveFile(null);
     toast.info("Logged out safely");
   };
 
-  // 2. Fetch User's Drive Files
-  const fetchGoogleDriveFiles = async (providerToken: string) => {
-    if (!providerToken) return;
+  const fetchGoogleDriveFiles = async (tokenOverride?: string) => {
+    let token = tokenOverride;
+    if (!token) {
+      const { data } = await supabase.auth.getSession();
+      token = data.session?.provider_token || undefined;
+    }
+
+    if (!token) return;
+
     setIsLoadingDrive(true);
     try {
+      // Allow PDFs, Text files, Word documents, and Google Docs
+      const query = encodeURIComponent(
+        "mimeType='application/pdf' or mimeType='text/plain' or mimeType='application/msword' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document' or mimeType='application/vnd.google-apps.document'"
+      );
+
       const res = await fetch(
-        "https://www.googleapis.com/drive/v3/files?q=mimeType='application/pdf'&fields=files(id,name,mimeType)",
-        { headers: { Authorization: `Bearer ${providerToken}` } }
+        `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType)`,
+        { headers: { Authorization: `Bearer ${token}` } }
       );
       const data = await res.json();
-      if (data.files) setDriveFiles(data.files);
+      
+      if (data.error?.code === 401) {
+        toast.error("Drive session expired. Please re-authenticate.");
+      } else if (data.files) {
+        setDriveFiles(data.files);
+      }
     } catch {
       toast.error("Failed to load Google Drive documents.");
-    } finally{
+    } finally {
       setIsLoadingDrive(false);
     }
   };
 
-  // 3. Load Chat History
   const loadMessages = async (chatId: string) => {
     setActiveChatId(chatId);
     const { data } = await supabase
@@ -150,6 +139,8 @@ const handleGoogleSignIn = async () => {
       setChats((prev) => [data, ...prev]);
       setActiveChatId(data.id);
       setMessages([]);
+      setFile(null);
+      setSelectedDriveFile(null);
     }
   };
 
@@ -168,8 +159,57 @@ const handleGoogleSignIn = async () => {
     }
   };
 
+  // Delete Chat Handler
+  const handleDeleteChat = async (e: React.MouseEvent, chatId: string) => {
+    e.stopPropagation();
+    
+    await supabase.from("messages").delete().eq("chat_id", chatId);
+    const { error } = await supabase.from("chats").delete().eq("id", chatId);
+
+    if (error) {
+      toast.error("Failed to delete chat.");
+      return;
+    }
+
+    const updatedChats = chats.filter((c) => c.id !== chatId);
+    setChats(updatedChats);
+    toast.success("Chat deleted");
+
+    if (activeChatId === chatId) {
+      if (updatedChats.length > 0) {
+        loadMessages(updatedChats[0].id);
+      } else {
+        createNewChat();
+      }
+    }
+  };
+
+  // Rename Chat Handlers
+  const startRenaming = (e: React.MouseEvent, chat: Chat) => {
+    e.stopPropagation();
+    setEditingChatId(chat.id);
+    setEditingTitle(chat.title);
+  };
+
+  const saveRename = async (e: React.MouseEvent, chatId: string) => {
+    e.stopPropagation();
+    if (!editingTitle.trim()) return;
+
+    setChats((prev) =>
+      prev.map((c) => (c.id === chatId ? { ...c, title: editingTitle } : c))
+    );
+    setEditingChatId(null);
+
+    await supabase.from("chats").update({ title: editingTitle }).eq("id", chatId);
+    toast.success("Chat renamed");
+  };
+
+  const cancelRename = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingChatId(null);
+  };
+
   useEffect(() => {
-    // Check initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session?.user?.id) {
@@ -180,14 +220,11 @@ const handleGoogleSignIn = async () => {
       }
     });
 
-    // Handle Auth state transitions (e.g. Google OAuth Callback Redirects)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, currentSession) => {
         setSession(currentSession);
         if (currentSession?.user?.id) {
           fetchChats(currentSession.user.id);
-          
-          // Check for provider token in current session or parse token from location hash
           const token = currentSession.provider_token;
           if (token) {
             fetchGoogleDriveFiles(token);
@@ -196,6 +233,8 @@ const handleGoogleSignIn = async () => {
           setChats([]);
           setMessages([]);
           setActiveChatId(null);
+          setFile(null);
+          setSelectedDriveFile(null);
         }
       }
     );
@@ -203,12 +242,10 @@ const handleGoogleSignIn = async () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // 4. File Attachment Handler (Client-side notification only)
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
     setSelectedDriveFile(null);
 
-    // Immediate System Message Notification in Chat Stream
     const systemNotice: Message = {
       role: "assistant",
       content: `📁 **${selectedFile.name}** is attached and ready for summary. Ask any question below to process it.`,
@@ -227,20 +264,49 @@ const handleGoogleSignIn = async () => {
     setMessages((prev) => [...prev, systemNotice]);
   };
 
-  // 5. Send Message (Sends data to Backend API)
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isSending || !activeChatId) return;
+    if (!input.trim() || isSending) return;
+
+    let chatId = activeChatId;
+
+    if (!chatId) {
+      if (!session?.user?.id) return;
+      const { data } = await supabase
+        .from("chats")
+        .insert({ title: input.slice(0, 25), user_id: session.user.id })
+        .select()
+        .single();
+
+      if (!data) {
+        toast.error("Failed to create a new chat session.");
+        return;
+      }
+
+      setChats((prev) => [data, ...prev]);
+      setActiveChatId(data.id);
+      chatId = data.id;
+    }
 
     const userQuery = input;
+    const currentHistory = [...messages];
     const newMessages: Message[] = [...messages, { role: "user", content: userQuery }];
+    
     setMessages(newMessages);
     setInput("");
     setIsSending(true);
 
-    // Save User Query to Database
+    const currentChat = chats.find((c) => c.id === chatId);
+    if (currentChat && currentChat.title === "New Document Chat") {
+      const updatedTitle = userQuery.slice(0, 25) + (userQuery.length > 25 ? "..." : "");
+      setChats((prev) =>
+        prev.map((c) => (c.id === chatId ? { ...c, title: updatedTitle } : c))
+      );
+      await supabase.from("chats").update({ title: updatedTitle }).eq("id", chatId);
+    }
+
     await supabase.from("messages").insert({
-      chat_id: activeChatId,
+      chat_id: chatId,
       role: "user",
       content: userQuery,
     });
@@ -248,13 +314,19 @@ const handleGoogleSignIn = async () => {
     try {
       const formData = new FormData();
       formData.append("question", userQuery);
-      formData.append("chatId", activeChatId);
+      formData.append("chatId", chatId || "");
+      formData.append("history", JSON.stringify(currentHistory));
 
       if (file) {
         formData.append("file", file);
       } else if (selectedDriveFile && session?.provider_token) {
-        formData.append("driveFileUrl", `https://www.googleapis.com/drive/v3/files/${selectedDriveFile.id}?alt=media`);
+        formData.append(
+          "driveFileUrl",
+          `https://www.googleapis.com/drive/v3/files/${selectedDriveFile.id}?alt=media`
+        );
         formData.append("providerToken", session.provider_token);
+      } else {
+        toast.error("No active document found. Please re-attach or select a file.");
       }
 
       const res = await fetch("/api/chat", { method: "POST", body: formData });
@@ -262,11 +334,10 @@ const handleGoogleSignIn = async () => {
 
       const aiResponse = data.answer || data.error || "Something went wrong.";
 
-      setMessages([...newMessages, { role: "assistant", content: aiResponse }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: aiResponse }]);
 
-      // Save Assistant Response to Database
       await supabase.from("messages").insert({
-        chat_id: activeChatId,
+        chat_id: chatId,
         role: "assistant",
         content: aiResponse,
       });
@@ -274,12 +345,9 @@ const handleGoogleSignIn = async () => {
       toast.error("Network error while connecting to server.");
     } finally {
       setIsSending(false);
-      setFile(null);
-      setSelectedDriveFile(null);
     }
   };
 
-  // Unauthenticated Google Login View
   if (!session) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-50 p-4">
@@ -289,7 +357,9 @@ const handleGoogleSignIn = async () => {
             <FileText size={24} />
           </div>
           <h2 className="text-2xl font-bold text-gray-900">DocAI Workspace</h2>
-          <p className="text-sm text-gray-500">Sign in with Google to access your Drive documents and chat history.</p>
+          <p className="text-sm text-gray-500">
+            Sign in with Google to access your Drive documents and chat history.
+          </p>
           <button
             onClick={handleGoogleSignIn}
             className="w-full flex items-center justify-center gap-3 border border-gray-300 p-3.5 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition cursor-pointer"
@@ -318,25 +388,77 @@ const handleGoogleSignIn = async () => {
             <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
               <FileText className="text-blue-600" /> DocAI
             </h2>
-            <button onClick={createNewChat} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition cursor-pointer">
+            <button
+              onClick={createNewChat}
+              className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition cursor-pointer"
+            >
               <Plus size={18} />
             </button>
           </div>
 
           {/* Chat History List */}
-          <div className="space-y-1 max-h-36 overflow-y-auto">
+          <div className="space-y-1 max-h-48 overflow-y-auto">
             <span className="text-xs font-semibold text-gray-400 uppercase">Chat History</span>
             {chats.map((chat) => (
-              <button
+              <div
                 key={chat.id}
                 onClick={() => loadMessages(chat.id)}
-                className={`w-full text-left p-2 rounded-lg text-sm flex items-center gap-2 truncate cursor-pointer ${
-                  activeChatId === chat.id ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-600 hover:bg-gray-50"
+                className={`group w-full p-2 rounded-lg text-sm flex items-center justify-between truncate cursor-pointer transition ${
+                  activeChatId === chat.id
+                    ? "bg-blue-50 text-blue-700 font-medium"
+                    : "text-gray-600 hover:bg-gray-50"
                 }`}
               >
-                <MessageSquare size={16} />
-                <span className="truncate">{chat.title}</span>
-              </button>
+                <div className="flex items-center gap-2 truncate flex-1 mr-2">
+                  <MessageSquare size={16} className="shrink-0" />
+                  {editingChatId === chat.id ? (
+                    <input
+                      type="text"
+                      value={editingTitle}
+                      onChange={(e) => setEditingTitle(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full border px-1.5 py-0.5 rounded text-xs text-gray-800 focus:outline-blue-600"
+                      autoFocus
+                    />
+                  ) : (
+                    <span className="truncate">{chat.title}</span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1">
+                  {editingChatId === chat.id ? (
+                    <>
+                      <button
+                        onClick={(e) => saveRename(e, chat.id)}
+                        className="p-1 text-green-600 hover:bg-green-100 rounded"
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        onClick={cancelRename}
+                        className="p-1 text-gray-500 hover:bg-gray-200 rounded"
+                      >
+                        <X size={14} />
+                      </button>
+                    </>
+                  ) : (
+                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition">
+                      <button
+                        onClick={(e) => startRenaming(e, chat)}
+                        className="p-1 text-gray-400 hover:text-gray-600 rounded"
+                      >
+                        <Edit2 size={13} />
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteChat(e, chat.id)}
+                        className="p-1 text-gray-400 hover:text-red-600 rounded"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             ))}
           </div>
 
@@ -361,12 +483,21 @@ const handleGoogleSignIn = async () => {
 
           {/* Google Drive Files List */}
           <div className="space-y-1 max-h-36 overflow-y-auto">
-            <span className="text-xs font-semibold text-gray-400 uppercase flex items-center gap-1">
-              <HardDrive size={12} /> From Google Drive
-            </span>
+            <div className="flex justify-between items-center pr-1">
+              <span className="text-xs font-semibold text-gray-400 uppercase flex items-center gap-1">
+                <HardDrive size={12} /> From Google Drive
+              </span>
+              <button 
+                onClick={handleGoogleSignIn} 
+                className="text-[10px] text-blue-600 hover:underline cursor-pointer"
+              >
+                Sync
+              </button>
+            </div>
+
             {isLoadingDrive ? (
               <div className="flex items-center gap-2 text-xs text-gray-400 p-2">
-                <Loader2 className="animate-spin" size={12} /> Loading Drive PDFs...
+                <Loader2 className="animate-spin" size={12} /> Loading Drive documents...
               </div>
             ) : driveFiles.length > 0 ? (
               driveFiles.map((df) => (
@@ -374,15 +505,25 @@ const handleGoogleSignIn = async () => {
                   key={df.id}
                   onClick={() => handleDriveSelect(df)}
                   className={`w-full text-left p-2 rounded-lg text-xs flex items-center gap-2 truncate cursor-pointer ${
-                    selectedDriveFile?.id === df.id ? "bg-green-50 text-green-700 font-semibold" : "text-gray-600 hover:bg-gray-50"
+                    selectedDriveFile?.id === df.id
+                      ? "bg-green-50 text-green-700 font-semibold"
+                      : "text-gray-600 hover:bg-gray-50"
                   }`}
                 >
-                  <FileText size={14} className="shrink-0 text-red-500" />
+                  <FileText size={14} className="shrink-0 text-blue-500" />
                   <span className="truncate">{df.name}</span>
                 </button>
               ))
             ) : (
-              <p className="text-xs text-gray-400 p-2">No drive PDFs found.</p>
+              <div className="p-2 space-y-1">
+                <p className="text-xs text-gray-400">No supported documents found.</p>
+                <button
+                  onClick={handleGoogleSignIn}
+                  className="text-xs text-blue-600 hover:underline font-medium block cursor-pointer"
+                >
+                  Re-connect Google Drive
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -399,16 +540,29 @@ const handleGoogleSignIn = async () => {
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         <div className="flex-1 p-4 overflow-y-auto space-y-4">
           {messages.map((msg, index) => (
-            <div key={index} className={`flex items-start gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              key={index}
+              className={`flex items-start gap-3 ${
+                msg.role === "user" ? "justify-end" : "justify-start"
+              }`}
+            >
               {msg.role === "assistant" && (
                 <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0">
                   <Bot size={18} />
                 </div>
               )}
-              <div className={`p-4 rounded-2xl text-sm max-w-xl ${
-                msg.role === "user" ? "bg-blue-600 text-white" : "bg-white text-gray-800 border shadow-sm"
-              }`}>
-                {msg.role === "assistant" ? <ReactMarkdown>{msg.content}</ReactMarkdown> : msg.content}
+              <div
+                className={`p-4 rounded-2xl text-sm max-w-xl ${
+                  msg.role === "user"
+                    ? "bg-blue-600 text-white"
+                    : "bg-white text-gray-800 border shadow-sm"
+                }`}
+              >
+                {msg.role === "assistant" ? (
+                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                ) : (
+                  msg.content
+                )}
               </div>
               {msg.role === "user" && (
                 <div className="w-8 h-8 rounded-full bg-gray-400 text-white flex items-center justify-center shrink-0">
@@ -418,7 +572,7 @@ const handleGoogleSignIn = async () => {
             </div>
           ))}
 
-          {/* ChatGPT-style Animated Thinking Bubble */}
+          {/* Thinking Indicator */}
           {isSending && (
             <div className="flex items-start gap-3 justify-start">
               <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0">
@@ -431,9 +585,11 @@ const handleGoogleSignIn = async () => {
               </div>
             </div>
           )}
+
+          <div ref={messagesEndRef} />
         </div>
 
-        {/* Form with Spinner inside button */}
+        {/* Input Form */}
         <form onSubmit={handleSendMessage} className="p-4 bg-white border-t">
           <div className="flex gap-2 max-w-4xl mx-auto">
             <input

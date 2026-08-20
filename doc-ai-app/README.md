@@ -58,3 +58,5 @@ npm install sonner
 npm install @supabase/ssr @supabase/supabase-js
 
 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
+
+npm install @google/generative-ai@latest
