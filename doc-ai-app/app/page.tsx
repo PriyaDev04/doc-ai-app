@@ -350,15 +350,15 @@ export default function Home() {
 
   if (!session) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-50 p-4">
+      <div className="flex flex-col h-screen items-center justify-center bg-gray-50 p-4">
         <Toaster position="top-center" richColors />
         <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8 text-center space-y-6 border border-gray-100">
           <div className="mx-auto w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
             <FileText size={24} />
           </div>
-          <h2 className="text-2xl font-bold text-gray-900">DocAI Workspace</h2>
-          <p className="text-sm text-gray-500">
-            Sign in with Google to access your Drive documents and chat history.
+          <h1 className="text-2xl font-bold text-gray-900">DocAI</h1>
+          <p className="text-sm text-gray-600 leading-relaxed">
+            DocAI helps you upload, process, and analyze your documents seamlessly using AI. Connect your Google Drive to analyze your files directly.
           </p>
           <button
             onClick={handleGoogleSignIn}
@@ -372,6 +372,12 @@ export default function Home() {
             </svg>
             Sign in with Google
           </button>
+          
+          <div className="pt-4 border-t border-gray-100 text-xs text-gray-500">
+            <a href="/privacy" className="text-blue-600 hover:underline">
+              Privacy Policy
+            </a>
+          </div>
         </div>
       </div>
     );
